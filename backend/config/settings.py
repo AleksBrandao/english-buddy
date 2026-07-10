@@ -12,6 +12,8 @@ https://docs.djangoproject.com/en/5.2/ref/settings/
 
 from pathlib import Path
 
+import os
+
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
 
@@ -45,14 +47,16 @@ INSTALLED_APPS = [
 
 ASGI_APPLICATION = 'config.asgi.application'
 
+ALLOWED_HOSTS = ["*"]  # já deve estar assim
 CORS_ALLOWED_ORIGINS = [
     "http://localhost:5173",
+    "https://bd9c-2804-69b0-51-5310-a973-6a55-9e36-5645.ngrok-free.app",  # troque pela sua URL do ngrok (muda toda vez que reinicia, no plano grátis)
 ]
-ALLOWED_HOSTS = ["*"]  # ok para desenvolvimento local
 
 MIDDLEWARE = [
     'corsheaders.middleware.CorsMiddleware',
     'django.middleware.security.SecurityMiddleware',
+    'whitenoise.middleware.WhiteNoiseMiddleware',  # adiciona logo depois do SecurityMiddleware
     'django.contrib.sessions.middleware.SessionMiddleware',
     'django.middleware.common.CommonMiddleware',
     'django.middleware.csrf.CsrfViewMiddleware',
@@ -61,12 +65,24 @@ MIDDLEWARE = [
     'django.middleware.clickjacking.XFrameOptionsMiddleware',
 ]
 
+STATICFILES_DIRS = [
+    os.path.join(BASE_DIR.parent, "frontend", "dist", "assets"),
+]
+STATIC_URL = "/assets/"
+STATIC_ROOT = os.path.join(BASE_DIR, "staticfiles")
+STORAGES = {
+    "staticfiles": {
+        "BACKEND": "whitenoise.storage.CompressedManifestStaticFilesStorage",
+    },
+}
+
 ROOT_URLCONF = 'config.urls'
 
 TEMPLATES = [
     {
         'BACKEND': 'django.template.backends.django.DjangoTemplates',
-        'DIRS': [],
+        'DIRS': [os.path.join(BASE_DIR.parent, "frontend", "dist")],
+     
         'APP_DIRS': True,
         'OPTIONS': {
             'context_processors': [
@@ -126,7 +142,7 @@ USE_TZ = True
 # Static files (CSS, JavaScript, Images)
 # https://docs.djangoproject.com/en/5.2/howto/static-files/
 
-STATIC_URL = 'static/'
+# STATIC_URL = 'static/'
 
 # Default primary key field type
 # https://docs.djangoproject.com/en/5.2/ref/settings/#default-auto-field

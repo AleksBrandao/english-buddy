@@ -15,8 +15,16 @@ Including another URLconf
     2. Add a URL to urlpatterns:  path('blog/', include('blog.urls'))
 """
 from django.contrib import admin
-from django.urls import path
+from django.urls import path, re_path
+from django.views.generic import TemplateView
+from django.conf import settings
+import os
 
 urlpatterns = [
     path('admin/', admin.site.urls),
+    re_path(r'^(?!assets/).*$', TemplateView.as_view(
+        template_name="index.html"
+    )),
 ]
+
+TEMPLATES_DIR = os.path.join(settings.BASE_DIR.parent, "frontend", "dist")

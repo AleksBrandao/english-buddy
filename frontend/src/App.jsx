@@ -1,40 +1,63 @@
-import { useState, useRef, useCallback } from 'react'
+import { useState, useRef, useCallback, useEffect } from 'react'
 import './App.css'
 
-const WS_URL = 'ws://localhost:8000/ws/talk/'
-const SILENCIO_LIMIAR = 0.015        // ajuste conforme sensibilidade do seu mic
-const SILENCIO_DURACAO_MS = 1200     // tempo de silêncio pra considerar que parou de falar
+const WS_PROTOCOL = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
+const WS_URL = `${WS_PROTOCOL}//${window.location.host}/ws/talk/`
+
+const PALAVRA_ATIVACAO = 'hi my friend'
+const SILENCIO_LIMIAR = 0.015
+const SILENCIO_DURACAO_MS = 1200
+const TIMEOUT_VOLTAR_STANDBY_MS = 20000 // volta a esperar a palavra de ativação após tanto tempo sem fala
 
 function App() {
-  const [status, setStatus] = useState('parado') // parado | ouvindo | processando | falando
+  const [status, setStatus] = useState('standby') // standby | ouvindo | processando | falando
   const [mensagens, setMensagens] = useState([])
   const [conectado, setConectado] = useState(false)
 
   const wsRef = useRef(null)
   const audioCtxRef = useRef(null)
-  const streamRef = useRef(null)
   const recorderRef = useRef(null)
   const chunksRef = useRef([])
   const silenceTimerRef = useRef(null)
   const analiserRef = useRef(null)
   const rafRef = useRef(null)
+  const wakeRecognitionRef = useRef(null)
+  const standbyTimerRef = useRef(null)
+  const emConversaRef = useRef(false)
 
   const conectar = useCallback(() => {
-    const ws = new WebSocket(WS_URL)
-    ws.binaryType = 'arraybuffer'
+    return new Promise((resolve) => {
+      if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+        resolve()
+        return
+      }
 
-    ws.onopen = () => setConectado(true)
-    ws.onclose = () => setConectado(false)
+      const ws = new WebSocket(WS_URL)
+      ws.binaryType = 'arraybuffer'
+
+      ws.onopen = () => {
+        setConectado(true)
+        resolve()
+      }
+      ws.onclose = () => setConectado(false)
+      ws.onerror = (err) => {
+        console.error('Erro no WebSocket:', err)
+        setConectado(false)
+      }
 
     ws.onmessage = (event) => {
       if (event.data instanceof ArrayBuffer) {
-        // áudio de resposta
         const blob = new Blob([event.data], { type: 'audio/wav' })
         const url = URL.createObjectURL(blob)
         setStatus('falando')
         const audio = new Audio(url)
         audio.play()
-        audio.onended = () => setStatus('parado')
+        audio.onended = () => {
+          // Depois de falar, volta a ouvir automaticamente (conversa fluida, sem botão)
+          if (emConversaRef.current) {
+            iniciarGravacao()
+          }
+        }
         return
       }
 
@@ -47,7 +70,17 @@ function App() {
       }
     }
 
-    wsRef.current = ws
+      wsRef.current = ws
+    })
+  }, [])
+
+  const resetarTimeoutStandby = useCallback(() => {
+    if (standbyTimerRef.current) clearTimeout(standbyTimerRef.current)
+    standbyTimerRef.current = setTimeout(() => {
+      emConversaRef.current = false
+      setStatus('standby')
+      iniciarEscutaAtivacao()
+    }, TIMEOUT_VOLTAR_STANDBY_MS)
   }, [])
 
   const pararGravacao = useCallback(() => {
@@ -74,9 +107,7 @@ function App() {
           silenceTimerRef.current = null
         }
       } else if (!silenceTimerRef.current) {
-        silenceTimerRef.current = setTimeout(() => {
-          pararGravacao()
-        }, SILENCIO_DURACAO_MS)
+        silenceTimerRef.current = setTimeout(() => pararGravacao(), SILENCIO_DURACAO_MS)
       }
 
       rafRef.current = requestAnimationFrame(checar)
@@ -86,11 +117,15 @@ function App() {
   }, [pararGravacao])
 
   const iniciarGravacao = useCallback(async () => {
-    if (!conectado) conectar()
+    resetarTimeoutStandby()
+    await conectar()
+
+    if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) {
+      setStatus('erro: não foi possível conectar ao servidor')
+      return
+    }
 
     const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
-    streamRef.current = stream
-
     const audioCtx = new AudioContext()
     audioCtxRef.current = audioCtx
     const source = audioCtx.createMediaStreamSource(stream)
@@ -108,31 +143,82 @@ function App() {
       const blob = new Blob(chunksRef.current, { type: 'audio/webm' })
       const arrayBuffer = await blob.arrayBuffer()
 
-      if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
-        wsRef.current.send(arrayBuffer)
-      }
-
       stream.getTracks().forEach((t) => t.stop())
       audioCtx.close()
-      setStatus('processando')
+
+      if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+        wsRef.current.send(arrayBuffer)
+        setStatus('processando')
+      } else {
+        console.error('WebSocket não está conectado. Estado:', wsRef.current?.readyState)
+        setStatus('erro: sem conexão com o servidor')
+        emConversaRef.current = false
+      }
     }
 
     recorder.start()
     setStatus('ouvindo')
     monitorarSilencio()
-  }, [conectado, conectar, monitorarSilencio])
+  }, [conectar, monitorarSilencio, resetarTimeoutStandby])
+
+  // ==== DETECÇÃO DA PALAVRA DE ATIVAÇÃO (sempre ouvindo, leve) ====
+  const iniciarEscutaAtivacao = useCallback(() => {
+    const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition
+    if (!SpeechRecognition) {
+      alert('Reconhecimento de voz não suportado neste navegador. Use Chrome no Android.')
+      return
+    }
+
+    if (wakeRecognitionRef.current) {
+      wakeRecognitionRef.current.stop()
+    }
+
+    const recognition = new SpeechRecognition()
+    recognition.continuous = true
+    recognition.interimResults = true
+    recognition.lang = 'en-US'
+
+    recognition.onresult = (event) => {
+      const ultimaFala = event.results[event.results.length - 1][0].transcript.toLowerCase()
+
+      if (ultimaFala.includes(PALAVRA_ATIVACAO)) {
+        recognition.stop()
+        emConversaRef.current = true
+        iniciarGravacao()
+      }
+    }
+
+    recognition.onend = () => {
+      // Reinicia sozinho enquanto estiver em modo standby (a API para sozinha às vezes)
+      if (!emConversaRef.current) {
+        recognition.start()
+      }
+    }
+
+    recognition.start()
+    wakeRecognitionRef.current = recognition
+  }, [iniciarGravacao])
+
+  useEffect(() => {
+    conectar()
+    iniciarEscutaAtivacao()
+    return () => {
+      if (wakeRecognitionRef.current) wakeRecognitionRef.current.stop()
+      if (standbyTimerRef.current) clearTimeout(standbyTimerRef.current)
+    }
+  }, [])
 
   return (
     <div className="app">
       <h1>English Buddy</h1>
-      <p className="status">Status: {status} {conectado ? '🟢' : '🔴'}</p>
-
-      <button
-        onClick={iniciarGravacao}
-        disabled={status === 'ouvindo' || status === 'processando'}
-      >
-        {status === 'ouvindo' ? 'Ouvindo...' : 'Falar'}
-      </button>
+      <p className="status">
+        Status: {status} {conectado ? '🟢' : '🔴'}
+      </p>
+      <p className="dica">
+        {status === 'standby'
+          ? `Diga "${PALAVRA_ATIVACAO}" para começar`
+          : 'Conversa em andamento...'}
+      </p>
 
       <div className="conversa">
         {mensagens.map((m, i) => (
