@@ -1,0 +1,58 @@
+.app {
+  max-width: 480px;
+  margin: 40px auto;
+  padding: 24px;
+  font-family: system-ui, -apple-system, sans-serif;
+  text-align: center;
+}
+
+h1 {
+  font-size: 1.5rem;
+  margin-bottom: 4px;
+}
+
+.status {
+  color: #666;
+  font-size: 0.9rem;
+  margin-bottom: 20px;
+}
+
+button {
+  padding: 14px 32px;
+  font-size: 1rem;
+  border-radius: 999px;
+  border: none;
+  background: #2563eb;
+  color: white;
+  cursor: pointer;
+}
+
+button:disabled {
+  background: #93c5fd;
+  cursor: default;
+}
+
+.conversa {
+  margin-top: 32px;
+  text-align: left;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.mensagem {
+  padding: 10px 14px;
+  border-radius: 10px;
+  font-size: 0.95rem;
+  line-height: 1.4;
+}
+
+.mensagem.voce {
+  background: #eff6ff;
+  align-self: flex-end;
+}
+
+.mensagem.ia {
+  background: #f3f4f6;
+  align-self: flex-start;
+}

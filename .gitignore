@@ -1,0 +1,29 @@
+# ==== Backend (Python/Django) ====
+backend/venv/
+backend/__pycache__/
+backend/**/__pycache__/
+backend/**/*.pyc
+backend/.env
+backend/db.sqlite3
+backend/staticfiles/
+backend/temp_audio/
+backend/*.wav
+backend/*.mp3
+
+# Modelos e cache baixados (grandes, recriáveis via pip)
+backend/piper/voices/*.onnx
+backend/piper/voices/*.onnx.json
+**/huggingface/
+
+# ==== Frontend (Node/Vite) ====
+frontend/node_modules/
+frontend/dist/
+frontend/.vite/
+
+# ==== Geral ====
+.DS_Store
+Thumbs.db
+*.log
+.vscode/
+ngrok.exe
+ngrok
