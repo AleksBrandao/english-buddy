@@ -96,6 +96,13 @@ class FeedbackTalkConsumer(TalkConsumer):
             mode="guided_feedback",
             extra={"feedback": feedback},
         )
+        await self._send_json(
+            {
+                "type": "lesson_stage_changed",
+                "stage": LessonStage.FIRST_FEEDBACK.value,
+                "feedback_ready": True,
+            }
+        )
 
     def _save_first_evaluation(self, feedback):
         AvaliacaoSessao.objects.update_or_create(
