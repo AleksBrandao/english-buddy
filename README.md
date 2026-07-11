@@ -27,6 +27,7 @@ Voz (mic) → Whisper (STT) → Groq (LLM) → Piper (TTS) → Voz (alto-falante
 - Modo de prática de pronúncia (peça ajuda em português, ex: *"como eu falo..."*)
 - Persistência de conversas e nível entre sessões (banco de dados)
 - Ativação por palavra-chave ("Hi my friend") + conversa contínua sem botão (mobile)
+- Prática guiada inicial: **Talking about your daily routine**
 
 ## Pré-requisitos
 
@@ -76,6 +77,48 @@ npm run dev
 
 Acessa `http://localhost:5173`.
 
+## Prática guiada: Daily Routine
+
+Na tela inicial, selecione **Iniciar Daily Routine**.
+
+O fluxo disponível neste incremento é:
+
+```text
+Introdução
+→ apresentação das expressões úteis
+→ primeira tentativa por voz
+→ registro automático de até seis respostas
+→ encerramento da primeira tentativa
+```
+
+As respostas são persistidas em `SessaoTreino`, separadas do histórico da
+conversa livre. O feedback automático e a segunda tentativa serão conectados no
+incremento seguinte.
+
+### Comandos WebSocket
+
+O mesmo fluxo pode ser controlado enviando JSON para `/ws/talk/`:
+
+```json
+{"type": "start_lesson", "scenario_id": "daily-routine-01"}
+```
+
+```json
+{"type": "continue_lesson"}
+```
+
+O primeiro `continue_lesson` apresenta as expressões. O segundo inicia a
+primeira pergunta falada.
+
+Outros comandos disponíveis:
+
+```json
+{"type": "lesson_status"}
+{"type": "finish_attempt"}
+{"type": "finish_lesson"}
+{"type": "start_free_conversation", "finish_active_lesson": true}
+```
+
 ## Uso pelo celular (fora de casa)
 
 Para acessar de fora da rede local, usamos um túnel [ngrok](https://ngrok.com):
@@ -92,7 +135,8 @@ suporte à detecção de palavra de ativação via Web Speech API).
 
 ## Painel administrativo
 
-Para inspecionar conversas e ajustar o perfil de nível salvo:
+Para inspecionar conversas, sessões guiadas, avaliações e ajustar o perfil de
+nível salvo:
 
 ```bash
 python manage.py createsuperuser
@@ -105,19 +149,23 @@ Depois acesse `http://localhost:8000/admin/`.
 ```
 english-buddy/
 ├── backend/
-│   ├── config/            # settings do Django
-│   ├── conversation/       # app principal (models, consumer, pipeline)
-│   │   ├── pipeline.py     # lógica de STT + LLM + TTS
-│   │   ├── consumers.py    # WebSocket handler
-│   │   └── models.py       # Perfil, Conversa, Mensagem
-│   └── piper/              # binário e vozes do Piper (não versionado)
+│   ├── config/                    # settings do Django
+│   ├── conversation/              # app principal
+│   │   ├── pipeline.py            # lógica de STT + LLM + TTS
+│   │   ├── consumers.py           # WebSocket e modos livre/guiado
+│   │   ├── lesson_orchestrator.py # estados da prática guiada
+│   │   ├── scenarios/             # conteúdo dos cenários
+│   │   └── models.py              # perfil, conversas e sessões
+│   └── piper/                      # binário e vozes do Piper (não versionado)
 └── frontend/
     └── src/
-        └── App.jsx          # interface de conversa por voz
+        └── App.jsx                 # conversa por voz e prática guiada
 ```
 
 ## Roadmap / ideias futuras
 
+- [ ] Feedback automático da primeira tentativa
+- [ ] Segunda tentativa e comparação de evolução
 - [ ] Verificação de pronúncia baseada em áudio (não só texto transcrito)
 - [ ] Deploy em produção (Vercel + Render/Railway), sem depender do PC ligado
 - [ ] Multiusuário com autenticação
