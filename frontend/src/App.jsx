@@ -5,8 +5,11 @@ const WS_PROTOCOL = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
 const WS_URL = `${WS_PROTOCOL}//${window.location.host}/ws/talk/`
 
 const PALAVRA_ATIVACAO = 'hi my friend'
-const SILENCIO_LIMIAR = 0.015
-const SILENCIO_DURACAO_MS = 1200
+// VAD: usa média móvel (EMA) do volume para reduzir a reação
+// a picos passageiros de ruído, como vento, buzina e trânsito.
+const SILENCIO_LIMIAR = 0.025
+const SILENCIO_DURACAO_MS = 1800
+const EMA_ALPHA = 0.15
 const TIMEOUT_VOLTAR_STANDBY_MS = 20000
 
 function App() {
@@ -23,11 +26,13 @@ function App() {
 
   const wsRef = useRef(null)
   const audioCtxRef = useRef(null)
+  const streamRef = useRef(null)          // stream de mic persistente durante a conversa
   const recorderRef = useRef(null)
   const chunksRef = useRef([])
   const silenceTimerRef = useRef(null)
   const analiserRef = useRef(null)
   const rafRef = useRef(null)
+  const emaVolumeRef = useRef(0)
   const wakeRecognitionRef = useRef(null)
   const standbyTimerRef = useRef(null)
   const emConversaRef = useRef(false)
@@ -207,9 +212,21 @@ function App() {
     if (standbyTimerRef.current) clearTimeout(standbyTimerRef.current)
     standbyTimerRef.current = setTimeout(() => {
       emConversaRef.current = false
+      liberarMicrofone()
       setStatus('standby')
       iniciarEscutaAtivacao()
     }, TIMEOUT_VOLTAR_STANDBY_MS)
+  }, [])
+
+  const liberarMicrofone = useCallback(() => {
+    if (streamRef.current) {
+      streamRef.current.getTracks().forEach((t) => t.stop())
+      streamRef.current = null
+    }
+    if (audioCtxRef.current) {
+      audioCtxRef.current.close()
+      audioCtxRef.current = null
+    }
   }, [])
 
   const pararGravacao = useCallback(() => {
@@ -220,33 +237,42 @@ function App() {
     if (silenceTimerRef.current) clearTimeout(silenceTimerRef.current)
   }, [])
 
-  const monitorarSilencio = useCallback(() => {
-    const analiser = analiserRef.current
-    const buffer = new Float32Array(analiser.fftSize)
+const monitorarSilencio = useCallback(() => {
+  const analiser = analiserRef.current
+  const buffer = new Float32Array(analiser.fftSize)
+  let volumeSuavizado = 0
 
-    const checar = () => {
-      analiser.getFloatTimeDomainData(buffer)
-      let soma = 0
-      for (let i = 0; i < buffer.length; i++) soma += buffer[i] * buffer[i]
-      const volume = Math.sqrt(soma / buffer.length)
+  const checar = () => {
+    analiser.getFloatTimeDomainData(buffer)
 
-      if (volume > SILENCIO_LIMIAR) {
-        if (silenceTimerRef.current) {
-          clearTimeout(silenceTimerRef.current)
-          silenceTimerRef.current = null
-        }
-      } else if (!silenceTimerRef.current) {
-        silenceTimerRef.current = setTimeout(
-          () => pararGravacao(),
-          SILENCIO_DURACAO_MS,
-        )
-      }
-
-      rafRef.current = requestAnimationFrame(checar)
+    let soma = 0
+    for (let i = 0; i < buffer.length; i++) {
+      soma += buffer[i] * buffer[i]
     }
 
-    checar()
-  }, [pararGravacao])
+    const volumeInstantaneo = Math.sqrt(soma / buffer.length)
+
+    volumeSuavizado =
+      EMA_ALPHA * volumeInstantaneo +
+      (1 - EMA_ALPHA) * volumeSuavizado
+
+    if (volumeSuavizado > SILENCIO_LIMIAR) {
+      if (silenceTimerRef.current) {
+        clearTimeout(silenceTimerRef.current)
+        silenceTimerRef.current = null
+      }
+    } else if (!silenceTimerRef.current) {
+      silenceTimerRef.current = setTimeout(
+        () => pararGravacao(),
+        SILENCIO_DURACAO_MS,
+      )
+    }
+
+    rafRef.current = requestAnimationFrame(checar)
+  }
+
+  checar()
+}, [pararGravacao])
 
   const iniciarGravacao = useCallback(async () => {
     if (recorderRef.current && recorderRef.current.state === 'recording') return
@@ -258,15 +284,8 @@ function App() {
       setStatus('erro: não foi possível conectar ao servidor')
       return
     }
-
     const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
-    const audioCtx = new AudioContext()
-    audioCtxRef.current = audioCtx
-    const source = audioCtx.createMediaStreamSource(stream)
-    const analiser = audioCtx.createAnalyser()
-    analiser.fftSize = 2048
-    source.connect(analiser)
-    analiserRef.current = analiser
+    streamRef.current = stream
 
     const recorder = new MediaRecorder(stream, { mimeType: 'audio/webm' })
     recorderRef.current = recorder
@@ -289,11 +308,9 @@ function App() {
         emConversaRef.current = false
       }
     }
+    return stream
+  }, [])
 
-    recorder.start()
-    setStatus('ouvindo')
-    monitorarSilencio()
-  }, [conectar, monitorarSilencio, resetarTimeoutStandby])
 
   const iniciarEscutaAtivacao = useCallback(() => {
     if (modoRef.current !== 'free') return
