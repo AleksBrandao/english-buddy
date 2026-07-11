@@ -417,17 +417,13 @@ function App() {
           {attemptActive && (
             <p className="attempt-progress">
               Respostas nesta tentativa: {answerCount}
+              {canFinishAttempt ? ' — mínimo atingido' : ''}
             </p>
           )}
 
           <div className="lesson-actions">
             {showContinue && (
               <button onClick={continuarAula}>Continuar</button>
-            )}
-            {attemptActive && canFinishAttempt && (
-              <button className="secondary" onClick={encerrarTentativa}>
-                Encerrar tentativa
-              </button>
             )}
             {lessonStage === 'first_feedback' && (
               <p className="notice">
