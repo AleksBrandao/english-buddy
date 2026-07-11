@@ -23,7 +23,7 @@ class FeedbackTalkConsumer(TalkConsumer):
         await self._send_json(event)
 
         if lesson.state.stage == LessonStage.FIRST_FEEDBACK:
-            await self._generate_first_feedback_and_continue()
+            await self._generate_first_feedback()
 
     async def _handle_lesson_utterance(self, texto_usuario):
         lesson = self._require_active_lesson()
@@ -44,7 +44,7 @@ class FeedbackTalkConsumer(TalkConsumer):
         if transition:
             await self._send_json(transition)
             if lesson.state.stage == LessonStage.FIRST_FEEDBACK:
-                await self._generate_first_feedback_and_continue()
+                await self._generate_first_feedback()
             return
 
         next_question = event.get("next_question")
@@ -55,7 +55,7 @@ class FeedbackTalkConsumer(TalkConsumer):
                 mode="guided_lesson",
             )
 
-    async def _generate_first_feedback_and_continue(self):
+    async def _generate_first_feedback(self):
         lesson = self._require_active_lesson()
         if lesson.state.stage != LessonStage.FIRST_FEEDBACK:
             raise LessonTransitionError(
@@ -89,15 +89,10 @@ class FeedbackTalkConsumer(TalkConsumer):
             }
         )
 
-        second_attempt_event = lesson.start_second_attempt()
-        await self._sincronizar_sessao_treino()
-        await self._send_json(second_attempt_event)
-
-        question = second_attempt_event["question"]
-        combined_text = f"{feedback['spoken_feedback']} {question}"
-        await self._persistir_mensagem("assistente", combined_text)
+        spoken_feedback = feedback["spoken_feedback"]
+        await self._persistir_mensagem("assistente", spoken_feedback)
         await self._send_text_and_audio(
-            combined_text,
+            spoken_feedback,
             mode="guided_feedback",
             extra={"feedback": feedback},
         )
