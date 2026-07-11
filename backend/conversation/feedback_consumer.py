@@ -91,18 +91,26 @@ class FeedbackTalkConsumer(TalkConsumer):
 
         spoken_feedback = feedback["spoken_feedback"]
         await self._persistir_mensagem("assistente", spoken_feedback)
-        await self._send_text_and_audio(
-            spoken_feedback,
-            mode="guided_feedback",
-            extra={"feedback": feedback},
-        )
-        await self._send_json(
-            {
-                "type": "lesson_stage_changed",
-                "stage": LessonStage.FIRST_FEEDBACK.value,
-                "feedback_ready": True,
-            }
-        )
+        try:
+            await self._send_text_and_audio(
+                spoken_feedback,
+                mode="guided_feedback",
+                extra={"feedback": feedback},
+            )
+        except Exception as exc:
+            print(f"[feedback] Audio generation failed: {exc}")
+            await self._send_error(
+                "feedback_audio_error",
+                "The feedback was saved, but its audio could not be generated.",
+            )
+        finally:
+            await self._send_json(
+                {
+                    "type": "lesson_stage_changed",
+                    "stage": LessonStage.FIRST_FEEDBACK.value,
+                    "feedback_ready": True,
+                }
+            )
 
     def _save_first_evaluation(self, feedback):
         AvaliacaoSessao.objects.update_or_create(
