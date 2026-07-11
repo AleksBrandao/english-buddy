@@ -6,6 +6,23 @@ from .lesson_orchestrator import (
     LessonState,
     LessonTransitionError,
 )
+from .scenarios import get_scenario
+
+
+class ScenarioRegistryTests(SimpleTestCase):
+    def test_daily_routine_scenario_is_available(self):
+        scenario = get_scenario("daily-routine-01")
+
+        self.assertEqual(
+            scenario.title,
+            "Talking about your daily routine",
+        )
+        self.assertEqual(len(scenario.target_phrases), 4)
+        self.assertEqual(scenario.max_first_attempt_turns, 6)
+
+    def test_unknown_scenario_raises_value_error(self):
+        with self.assertRaises(ValueError):
+            get_scenario("unknown-scenario")
 
 
 class LessonOrchestratorTests(SimpleTestCase):
