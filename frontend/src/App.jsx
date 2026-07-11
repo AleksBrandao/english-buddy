@@ -7,12 +7,19 @@ const WS_URL = `${WS_PROTOCOL}//${window.location.host}/ws/talk/`
 const PALAVRA_ATIVACAO = 'hi my friend'
 const SILENCIO_LIMIAR = 0.015
 const SILENCIO_DURACAO_MS = 1200
-const TIMEOUT_VOLTAR_STANDBY_MS = 20000 // volta a esperar a palavra de ativação após tanto tempo sem fala
+const TIMEOUT_VOLTAR_STANDBY_MS = 20000
 
 function App() {
-  const [status, setStatus] = useState('standby') // standby | ouvindo | processando | falando
+  const [status, setStatus] = useState('standby')
   const [mensagens, setMensagens] = useState([])
   const [conectado, setConectado] = useState(false)
+  const [modo, setModo] = useState('free')
+  const [lessonStage, setLessonStage] = useState(null)
+  const [lessonInfo, setLessonInfo] = useState(null)
+  const [targetPhrases, setTargetPhrases] = useState([])
+  const [answerCount, setAnswerCount] = useState(0)
+  const [canFinishAttempt, setCanFinishAttempt] = useState(false)
+  const [lessonError, setLessonError] = useState('')
 
   const wsRef = useRef(null)
   const audioCtxRef = useRef(null)
@@ -24,9 +31,15 @@ function App() {
   const wakeRecognitionRef = useRef(null)
   const standbyTimerRef = useRef(null)
   const emConversaRef = useRef(false)
+  const modoRef = useRef('free')
+  const autoListenAfterAudioRef = useRef(false)
+
+  useEffect(() => {
+    modoRef.current = modo
+  }, [modo])
 
   const conectar = useCallback(() => {
-    return new Promise((resolve) => {
+    return new Promise((resolve, reject) => {
       if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
         resolve()
         return
@@ -43,38 +56,154 @@ function App() {
       ws.onerror = (err) => {
         console.error('Erro no WebSocket:', err)
         setConectado(false)
+        reject(err)
       }
 
-    ws.onmessage = (event) => {
-      if (event.data instanceof ArrayBuffer) {
-        const blob = new Blob([event.data], { type: 'audio/wav' })
-        const url = URL.createObjectURL(blob)
-        setStatus('falando')
-        const audio = new Audio(url)
-        audio.play()
-        audio.onended = () => {
-          // Depois de falar, volta a ouvir automaticamente (conversa fluida, sem botão)
-          if (emConversaRef.current) {
-            iniciarGravacao()
+      ws.onmessage = (event) => {
+        if (event.data instanceof ArrayBuffer) {
+          const blob = new Blob([event.data], { type: 'audio/wav' })
+          const url = URL.createObjectURL(blob)
+          setStatus('falando')
+          const audio = new Audio(url)
+
+          audio.onended = () => {
+            URL.revokeObjectURL(url)
+            if (emConversaRef.current && autoListenAfterAudioRef.current) {
+              iniciarGravacao()
+            }
           }
+          audio.onerror = () => URL.revokeObjectURL(url)
+          audio.play().catch((error) => {
+            console.error('Erro ao reproduzir áudio:', error)
+            URL.revokeObjectURL(url)
+          })
+          return
         }
-        return
-      }
 
-      const dados = JSON.parse(event.data)
-      if (dados.type === 'transcription') {
-        setMensagens((m) => [...m, { autor: 'voce', texto: dados.text }])
-        setStatus('processando')
-      } else if (dados.type === 'response_text') {
-        setMensagens((m) => [...m, { autor: 'ia', texto: dados.text }])
+        const dados = JSON.parse(event.data)
+
+        if (dados.type === 'connection_ready') {
+          setModo(dados.mode || 'free')
+          return
+        }
+
+        if (dados.type === 'transcription') {
+          setMensagens((m) => [...m, { autor: 'voce', texto: dados.text }])
+          setStatus('processando')
+          return
+        }
+
+        if (dados.type === 'response_text') {
+          autoListenAfterAudioRef.current = true
+          setMensagens((m) => [...m, { autor: 'ia', texto: dados.text }])
+          return
+        }
+
+        if (dados.type === 'lesson_started') {
+          setModo('lesson')
+          setLessonStage(dados.stage)
+          setLessonInfo({
+            title: dados.title,
+            objective: dados.objective,
+            estimatedDuration: dados.estimated_duration_minutes,
+          })
+          setLessonError('')
+          setAnswerCount(0)
+          setCanFinishAttempt(false)
+          const introMessages = (dados.messages || []).map((texto) => ({
+            autor: 'ia',
+            texto,
+          }))
+          setMensagens(introMessages)
+          setStatus('aula iniciada')
+          return
+        }
+
+        if (dados.type === 'target_phrases') {
+          setLessonStage(dados.stage)
+          setTargetPhrases(dados.phrases || [])
+          setStatus('prepare as expressões')
+          return
+        }
+
+        if (dados.type === 'lesson_stage_changed') {
+          setLessonStage(dados.stage)
+          if (dados.stage === 'first_attempt' || dados.stage === 'second_attempt') {
+            setAnswerCount(0)
+            setCanFinishAttempt(false)
+            setStatus('aguardando pergunta')
+          } else if (dados.stage === 'first_feedback') {
+            emConversaRef.current = false
+            autoListenAfterAudioRef.current = false
+            setStatus('primeira tentativa concluída')
+          } else if (dados.stage === 'final_result') {
+            emConversaRef.current = false
+            autoListenAfterAudioRef.current = false
+            setStatus('preparando resultado')
+          }
+          return
+        }
+
+        if (dados.type === 'attempt_turn_recorded') {
+          setAnswerCount(dados.answer_count || 0)
+          setCanFinishAttempt(Boolean(dados.can_finish))
+          if (dados.attempt_complete) {
+            emConversaRef.current = false
+            autoListenAfterAudioRef.current = false
+          }
+          return
+        }
+
+        if (dados.type === 'lesson_status') {
+          setLessonStage(dados.stage)
+          return
+        }
+
+        if (dados.type === 'lesson_completed') {
+          emConversaRef.current = false
+          autoListenAfterAudioRef.current = false
+          setLessonStage('completed')
+          setStatus('aula encerrada')
+          return
+        }
+
+        if (dados.type === 'mode_changed') {
+          setModo(dados.mode)
+          setLessonStage(null)
+          setLessonInfo(null)
+          setTargetPhrases([])
+          setAnswerCount(0)
+          setCanFinishAttempt(false)
+          setMensagens([])
+          setStatus('standby')
+          emConversaRef.current = false
+          autoListenAfterAudioRef.current = false
+          setTimeout(() => iniciarEscutaAtivacao(), 100)
+          return
+        }
+
+        if (dados.type === 'lesson_error') {
+          setLessonError(dados.message)
+          setStatus('erro na aula')
+        }
       }
-    }
 
       wsRef.current = ws
     })
   }, [])
 
+  const enviarComando = useCallback(async (payload) => {
+    try {
+      await conectar()
+      wsRef.current.send(JSON.stringify(payload))
+    } catch (error) {
+      console.error('Erro ao enviar comando:', error)
+      setLessonError('Não foi possível conectar ao servidor.')
+    }
+  }, [conectar])
+
   const resetarTimeoutStandby = useCallback(() => {
+    if (modoRef.current !== 'free') return
     if (standbyTimerRef.current) clearTimeout(standbyTimerRef.current)
     standbyTimerRef.current = setTimeout(() => {
       emConversaRef.current = false
@@ -107,7 +236,10 @@ function App() {
           silenceTimerRef.current = null
         }
       } else if (!silenceTimerRef.current) {
-        silenceTimerRef.current = setTimeout(() => pararGravacao(), SILENCIO_DURACAO_MS)
+        silenceTimerRef.current = setTimeout(
+          () => pararGravacao(),
+          SILENCIO_DURACAO_MS,
+        )
       }
 
       rafRef.current = requestAnimationFrame(checar)
@@ -117,6 +249,8 @@ function App() {
   }, [pararGravacao])
 
   const iniciarGravacao = useCallback(async () => {
+    if (recorderRef.current && recorderRef.current.state === 'recording') return
+
     resetarTimeoutStandby()
     await conectar()
 
@@ -143,14 +277,14 @@ function App() {
       const blob = new Blob(chunksRef.current, { type: 'audio/webm' })
       const arrayBuffer = await blob.arrayBuffer()
 
-      stream.getTracks().forEach((t) => t.stop())
+      stream.getTracks().forEach((track) => track.stop())
       audioCtx.close()
 
       if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
         wsRef.current.send(arrayBuffer)
         setStatus('processando')
       } else {
-        console.error('WebSocket não está conectado. Estado:', wsRef.current?.readyState)
+        console.error('WebSocket não está conectado:', wsRef.current?.readyState)
         setStatus('erro: sem conexão com o servidor')
         emConversaRef.current = false
       }
@@ -161,11 +295,12 @@ function App() {
     monitorarSilencio()
   }, [conectar, monitorarSilencio, resetarTimeoutStandby])
 
-  // ==== DETECÇÃO DA PALAVRA DE ATIVAÇÃO (sempre ouvindo, leve) ====
   const iniciarEscutaAtivacao = useCallback(() => {
+    if (modoRef.current !== 'free') return
+
     const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition
     if (!SpeechRecognition) {
-      alert('Reconhecimento de voz não suportado neste navegador. Use Chrome no Android.')
+      setStatus('reconhecimento por palavra de ativação indisponível')
       return
     }
 
@@ -184,13 +319,13 @@ function App() {
       if (ultimaFala.includes(PALAVRA_ATIVACAO)) {
         recognition.stop()
         emConversaRef.current = true
+        autoListenAfterAudioRef.current = true
         iniciarGravacao()
       }
     }
 
     recognition.onend = () => {
-      // Reinicia sozinho enquanto estiver em modo standby (a API para sozinha às vezes)
-      if (!emConversaRef.current) {
+      if (!emConversaRef.current && modoRef.current === 'free') {
         recognition.start()
       }
     }
@@ -199,14 +334,54 @@ function App() {
     wakeRecognitionRef.current = recognition
   }, [iniciarGravacao])
 
+  const iniciarAula = useCallback(async () => {
+    setLessonError('')
+    if (wakeRecognitionRef.current) wakeRecognitionRef.current.stop()
+    emConversaRef.current = true
+    autoListenAfterAudioRef.current = false
+    await enviarComando({
+      type: 'start_lesson',
+      scenario_id: 'daily-routine-01',
+    })
+  }, [enviarComando])
+
+  const continuarAula = useCallback(async () => {
+    emConversaRef.current = true
+    await enviarComando({ type: 'continue_lesson' })
+  }, [enviarComando])
+
+  const encerrarTentativa = useCallback(async () => {
+    emConversaRef.current = false
+    autoListenAfterAudioRef.current = false
+    await enviarComando({ type: 'finish_attempt' })
+  }, [enviarComando])
+
+  const encerrarAula = useCallback(async () => {
+    emConversaRef.current = false
+    autoListenAfterAudioRef.current = false
+    await enviarComando({ type: 'finish_lesson' })
+  }, [enviarComando])
+
+  const voltarConversaLivre = useCallback(async () => {
+    await enviarComando({
+      type: 'start_free_conversation',
+      finish_active_lesson: true,
+    })
+  }, [enviarComando])
+
   useEffect(() => {
     conectar()
     iniciarEscutaAtivacao()
     return () => {
       if (wakeRecognitionRef.current) wakeRecognitionRef.current.stop()
       if (standbyTimerRef.current) clearTimeout(standbyTimerRef.current)
+      if (rafRef.current) cancelAnimationFrame(rafRef.current)
+      if (wsRef.current) wsRef.current.close()
     }
   }, [])
+
+  const showContinue = lessonStage === 'introduction' || lessonStage === 'phrase_preparation'
+  const attemptActive = lessonStage === 'first_attempt' || lessonStage === 'second_attempt'
 
   return (
     <div className="app">
@@ -214,16 +389,70 @@ function App() {
       <p className="status">
         Status: {status} {conectado ? '🟢' : '🔴'}
       </p>
-      <p className="dica">
-        {status === 'standby'
-          ? `Diga "${PALAVRA_ATIVACAO}" para começar`
-          : 'Conversa em andamento...'}
-      </p>
+
+      {modo === 'free' ? (
+        <section className="mode-card">
+          <h2>Conversa livre</h2>
+          <p>Diga “{PALAVRA_ATIVACAO}” para começar ou pratique uma aula guiada.</p>
+          <button onClick={iniciarAula} disabled={!conectado}>
+            Iniciar Daily Routine
+          </button>
+        </section>
+      ) : (
+        <section className="mode-card lesson-card">
+          <span className="lesson-label">Prática guiada</span>
+          <h2>{lessonInfo?.title || 'Daily Routine'}</h2>
+          {lessonInfo?.objective && <p>{lessonInfo.objective}</p>}
+          <p className="lesson-stage">Etapa: {lessonStage}</p>
+
+          {targetPhrases.length > 0 && lessonStage === 'phrase_preparation' && (
+            <div className="phrases">
+              <strong>Expressões úteis</strong>
+              {targetPhrases.map((phrase) => (
+                <span key={phrase}>{phrase}</span>
+              ))}
+            </div>
+          )}
+
+          {attemptActive && (
+            <p className="attempt-progress">
+              Respostas nesta tentativa: {answerCount}
+            </p>
+          )}
+
+          <div className="lesson-actions">
+            {showContinue && (
+              <button onClick={continuarAula}>Continuar</button>
+            )}
+            {attemptActive && canFinishAttempt && (
+              <button className="secondary" onClick={encerrarTentativa}>
+                Encerrar tentativa
+              </button>
+            )}
+            {lessonStage === 'first_feedback' && (
+              <p className="notice">
+                Primeira tentativa registrada. O feedback automático será conectado na próxima etapa.
+              </p>
+            )}
+            {lessonStage !== 'completed' && (
+              <button className="danger" onClick={encerrarAula}>
+                Encerrar aula
+              </button>
+            )}
+            <button className="secondary" onClick={voltarConversaLivre}>
+              Voltar à conversa livre
+            </button>
+          </div>
+        </section>
+      )}
+
+      {lessonError && <p className="error-message">{lessonError}</p>}
 
       <div className="conversa">
-        {mensagens.map((m, i) => (
-          <div key={i} className={`mensagem ${m.autor}`}>
-            <strong>{m.autor === 'voce' ? 'Você' : 'Buddy'}:</strong> {m.texto}
+        {mensagens.map((mensagem, index) => (
+          <div key={index} className={`mensagem ${mensagem.autor}`}>
+            <strong>{mensagem.autor === 'voce' ? 'Você' : 'Buddy'}:</strong>{' '}
+            {mensagem.texto}
           </div>
         ))}
       </div>
