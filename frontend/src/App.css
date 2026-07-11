@@ -1,5 +1,5 @@
 .app {
-  max-width: 480px;
+  max-width: 560px;
   margin: 40px auto;
   padding: 24px;
   font-family: system-ui, -apple-system, sans-serif;
@@ -11,6 +11,10 @@ h1 {
   margin-bottom: 4px;
 }
 
+h2 {
+  margin: 8px 0;
+}
+
 .status {
   color: #666;
   font-size: 0.9rem;
@@ -18,8 +22,8 @@ h1 {
 }
 
 button {
-  padding: 14px 32px;
-  font-size: 1rem;
+  padding: 12px 22px;
+  font-size: 0.95rem;
   border-radius: 999px;
   border: none;
   background: #2563eb;
@@ -30,6 +34,93 @@ button {
 button:disabled {
   background: #93c5fd;
   cursor: default;
+}
+
+button.secondary {
+  background: #e5e7eb;
+  color: #1f2937;
+}
+
+button.danger {
+  background: #b91c1c;
+}
+
+.mode-card {
+  padding: 20px;
+  border: 1px solid #dbeafe;
+  border-radius: 16px;
+  background: #f8fbff;
+  text-align: left;
+}
+
+.mode-card > button {
+  display: block;
+  margin: 16px auto 0;
+}
+
+.lesson-card {
+  background: #fff;
+}
+
+.lesson-label {
+  display: inline-block;
+  padding: 4px 10px;
+  border-radius: 999px;
+  background: #dbeafe;
+  color: #1d4ed8;
+  font-size: 0.78rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.lesson-stage,
+.attempt-progress {
+  color: #6b7280;
+  font-size: 0.9rem;
+}
+
+.phrases {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 18px 0;
+  padding: 16px;
+  border-radius: 12px;
+  background: #eff6ff;
+}
+
+.phrases span {
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: white;
+}
+
+.lesson-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: center;
+  margin-top: 18px;
+}
+
+.notice {
+  width: 100%;
+  margin: 0;
+  padding: 12px;
+  border-radius: 10px;
+  background: #fef3c7;
+  color: #92400e;
+  font-size: 0.9rem;
+}
+
+.error-message {
+  margin-top: 16px;
+  padding: 12px;
+  border-radius: 10px;
+  background: #fee2e2;
+  color: #991b1b;
+  text-align: left;
 }
 
 .conversa {
@@ -55,4 +146,15 @@ button:disabled {
 .mensagem.ia {
   background: #f3f4f6;
   align-self: flex-start;
+}
+
+@media (max-width: 600px) {
+  .app {
+    margin: 0 auto;
+    padding: 16px;
+  }
+
+  .lesson-actions button {
+    flex: 1 1 100%;
+  }
 }
