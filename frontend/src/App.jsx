@@ -274,42 +274,103 @@ const monitorarSilencio = useCallback(() => {
   checar()
 }, [pararGravacao])
 
-  const iniciarGravacao = useCallback(async () => {
-    if (recorderRef.current && recorderRef.current.state === 'recording') return
+const iniciarGravacao = useCallback(async () => {
+  if (
+    recorderRef.current &&
+    recorderRef.current.state === 'recording'
+  ) {
+    return
+  }
 
+  try {
     resetarTimeoutStandby()
     await conectar()
 
-    if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) {
+    if (
+      !wsRef.current ||
+      wsRef.current.readyState !== WebSocket.OPEN
+    ) {
       setStatus('erro: não foi possível conectar ao servidor')
       return
     }
-    const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
+
+    const stream = await navigator.mediaDevices.getUserMedia({
+      audio: true,
+    })
+
     streamRef.current = stream
 
-    const recorder = new MediaRecorder(stream, { mimeType: 'audio/webm' })
+    const audioCtx = new AudioContext()
+    audioCtxRef.current = audioCtx
+
+    const source = audioCtx.createMediaStreamSource(stream)
+    const analiser = audioCtx.createAnalyser()
+
+    analiser.fftSize = 2048
+    source.connect(analiser)
+    analiserRef.current = analiser
+
+    const recorder = new MediaRecorder(stream, {
+      mimeType: 'audio/webm',
+    })
+
     recorderRef.current = recorder
     chunksRef.current = []
 
-    recorder.ondataavailable = (e) => chunksRef.current.push(e.data)
+    recorder.ondataavailable = (event) => {
+      if (event.data.size > 0) {
+        chunksRef.current.push(event.data)
+      }
+    }
+
     recorder.onstop = async () => {
-      const blob = new Blob(chunksRef.current, { type: 'audio/webm' })
+      const blob = new Blob(chunksRef.current, {
+        type: 'audio/webm',
+      })
+
       const arrayBuffer = await blob.arrayBuffer()
 
       stream.getTracks().forEach((track) => track.stop())
-      audioCtx.close()
+      streamRef.current = null
 
-      if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+      if (audioCtx.state !== 'closed') {
+        await audioCtx.close()
+      }
+
+      audioCtxRef.current = null
+      analiserRef.current = null
+
+      if (
+        wsRef.current &&
+        wsRef.current.readyState === WebSocket.OPEN
+      ) {
         wsRef.current.send(arrayBuffer)
         setStatus('processando')
       } else {
-        console.error('WebSocket não está conectado:', wsRef.current?.readyState)
+        console.error(
+          'WebSocket não está conectado:',
+          wsRef.current?.readyState,
+        )
+
         setStatus('erro: sem conexão com o servidor')
         emConversaRef.current = false
       }
     }
-    return stream
-  }, [])
+
+    recorder.start()
+    setStatus('ouvindo')
+    monitorarSilencio()
+  } catch (error) {
+    console.error('Erro ao iniciar gravação:', error)
+    setStatus('erro ao acessar o microfone')
+    liberarMicrofone()
+  }
+}, [
+  conectar,
+  liberarMicrofone,
+  monitorarSilencio,
+  resetarTimeoutStandby,
+])
 
 
   const iniciarEscutaAtivacao = useCallback(() => {
