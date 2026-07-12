@@ -1,3 +1,5 @@
+import json
+
 from asgiref.sync import sync_to_async
 from channels.db import database_sync_to_async
 
@@ -8,11 +10,30 @@ from .models import AvaliacaoSessao
 
 
 class FeedbackTalkConsumer(TalkConsumer):
-    """TalkConsumer with automatic first-attempt feedback.
+    """TalkConsumer with guided feedback and second-attempt support."""
 
-    Keeping this integration in a subclass limits the change surface of the
-    existing voice pipeline while the guided lesson flow is still evolving.
-    """
+    async def _receive_command(self, text_data):
+        """Handle incremental lesson commands before delegating legacy ones."""
+        try:
+            payload = json.loads(text_data)
+        except json.JSONDecodeError:
+            await super()._receive_command(text_data)
+            return
+
+        if (
+            isinstance(payload, dict)
+            and payload.get("type") == "start_second_attempt"
+        ):
+            try:
+                await self._command_start_second_attempt(payload)
+            except (LessonTransitionError, ValueError) as exc:
+                await self._send_error(
+                    "invalid_lesson_transition",
+                    str(exc),
+                )
+            return
+
+        await super()._receive_command(text_data)
 
     async def _command_finish_attempt(self, payload):
         lesson = self._require_active_lesson()
@@ -24,6 +45,21 @@ class FeedbackTalkConsumer(TalkConsumer):
 
         if lesson.state.stage == LessonStage.FIRST_FEEDBACK:
             await self._generate_first_feedback()
+
+    async def _command_start_second_attempt(self, payload):
+        lesson = self._require_active_lesson()
+        event = lesson.start_second_attempt()
+
+        await self._sincronizar_sessao_treino()
+        await self._send_json(event)
+
+        question = event["question"]
+        await self._persistir_mensagem("assistente", question)
+        await self._send_text_and_audio(
+            question,
+            mode="guided_lesson",
+            extra={"attempt": "second"},
+        )
 
     async def _handle_lesson_utterance(self, texto_usuario):
         lesson = self._require_active_lesson()
