@@ -5,12 +5,18 @@ const WS_PROTOCOL = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
 const WS_URL = `${WS_PROTOCOL}//${window.location.host}/ws/talk/`
 
 const PALAVRA_ATIVACAO = 'hi my friend'
-// VAD: usa média móvel (EMA) do volume para reduzir a reação
-// a picos passageiros de ruído, como vento, buzina e trânsito.
 const SILENCIO_LIMIAR = 0.025
 const SILENCIO_DURACAO_MS = 1800
 const EMA_ALPHA = 0.15
 const TIMEOUT_VOLTAR_STANDBY_MS = 20000
+
+const SCORE_LABELS = [
+  ['task_completion', 'Conclusão'],
+  ['clarity', 'Clareza'],
+  ['fluency', 'Fluência'],
+  ['organization', 'Organização'],
+  ['interaction', 'Interação'],
+]
 
 function App() {
   const [status, setStatus] = useState('standby')
@@ -23,16 +29,17 @@ function App() {
   const [answerCount, setAnswerCount] = useState(0)
   const [canFinishAttempt, setCanFinishAttempt] = useState(false)
   const [lessonError, setLessonError] = useState('')
+  const [feedback, setFeedback] = useState(null)
+  const [feedbackReady, setFeedbackReady] = useState(false)
 
   const wsRef = useRef(null)
   const audioCtxRef = useRef(null)
-  const streamRef = useRef(null)          // stream de mic persistente durante a conversa
+  const streamRef = useRef(null)
   const recorderRef = useRef(null)
   const chunksRef = useRef([])
   const silenceTimerRef = useRef(null)
   const analiserRef = useRef(null)
   const rafRef = useRef(null)
-  const emaVolumeRef = useRef(0)
   const wakeRecognitionRef = useRef(null)
   const standbyTimerRef = useRef(null)
   const emConversaRef = useRef(false)
@@ -57,19 +64,21 @@ function App() {
         setConectado(true)
         resolve()
       }
+
       ws.onclose = () => setConectado(false)
-      ws.onerror = (err) => {
-        console.error('Erro no WebSocket:', err)
+      ws.onerror = (error) => {
+        console.error('Erro no WebSocket:', error)
         setConectado(false)
-        reject(err)
+        reject(error)
       }
 
       ws.onmessage = (event) => {
         if (event.data instanceof ArrayBuffer) {
           const blob = new Blob([event.data], { type: 'audio/wav' })
           const url = URL.createObjectURL(blob)
-          setStatus('falando')
           const audio = new Audio(url)
+
+          setStatus('falando')
 
           audio.onended = () => {
             URL.revokeObjectURL(url)
@@ -77,10 +86,16 @@ function App() {
               iniciarGravacao()
             }
           }
-          audio.onerror = () => URL.revokeObjectURL(url)
+
+          audio.onerror = () => {
+            URL.revokeObjectURL(url)
+            setLessonError('Não foi possível reproduzir o áudio do Buddy.')
+          }
+
           audio.play().catch((error) => {
             console.error('Erro ao reproduzir áudio:', error)
             URL.revokeObjectURL(url)
+            setLessonError('O navegador bloqueou a reprodução do áudio.')
           })
           return
         }
@@ -93,14 +108,20 @@ function App() {
         }
 
         if (dados.type === 'transcription') {
-          setMensagens((m) => [...m, { autor: 'voce', texto: dados.text }])
+          setMensagens((current) => [
+            ...current,
+            { autor: 'voce', texto: dados.text },
+          ])
           setStatus('processando')
           return
         }
 
         if (dados.type === 'response_text') {
-          autoListenAfterAudioRef.current = true
-          setMensagens((m) => [...m, { autor: 'ia', texto: dados.text }])
+          autoListenAfterAudioRef.current = dados.modo !== 'guided_feedback'
+          setMensagens((current) => [
+            ...current,
+            { autor: 'ia', texto: dados.text },
+          ])
           return
         }
 
@@ -113,8 +134,11 @@ function App() {
             estimatedDuration: dados.estimated_duration_minutes,
           })
           setLessonError('')
+          setFeedback(null)
+          setFeedbackReady(false)
           setAnswerCount(0)
           setCanFinishAttempt(false)
+
           const introMessages = (dados.messages || []).map((texto) => ({
             autor: 'ia',
             texto,
@@ -131,8 +155,26 @@ function App() {
           return
         }
 
+        if (dados.type === 'feedback_generating') {
+          emConversaRef.current = false
+          autoListenAfterAudioRef.current = false
+          setFeedbackReady(false)
+          setStatus('avaliando primeira tentativa')
+          return
+        }
+
+        if (dados.type === 'intermediate_feedback') {
+          emConversaRef.current = false
+          autoListenAfterAudioRef.current = false
+          setFeedback(dados.feedback || null)
+          setFeedbackReady(true)
+          setStatus('feedback pronto')
+          return
+        }
+
         if (dados.type === 'lesson_stage_changed') {
           setLessonStage(dados.stage)
+
           if (dados.stage === 'first_attempt' || dados.stage === 'second_attempt') {
             setAnswerCount(0)
             setCanFinishAttempt(false)
@@ -140,11 +182,16 @@ function App() {
           } else if (dados.stage === 'first_feedback') {
             emConversaRef.current = false
             autoListenAfterAudioRef.current = false
-            setStatus('primeira tentativa concluída')
+            if (dados.feedback_ready) {
+              setFeedbackReady(true)
+              setStatus('feedback pronto')
+            } else {
+              setStatus('primeira tentativa concluída')
+            }
           } else if (dados.stage === 'final_result') {
             emConversaRef.current = false
             autoListenAfterAudioRef.current = false
-            setStatus('preparando resultado')
+            setStatus('segunda tentativa concluída')
           }
           return
         }
@@ -152,6 +199,7 @@ function App() {
         if (dados.type === 'attempt_turn_recorded') {
           setAnswerCount(dados.answer_count || 0)
           setCanFinishAttempt(Boolean(dados.can_finish))
+
           if (dados.attempt_complete) {
             emConversaRef.current = false
             autoListenAfterAudioRef.current = false
@@ -179,8 +227,11 @@ function App() {
           setTargetPhrases([])
           setAnswerCount(0)
           setCanFinishAttempt(false)
+          setFeedback(null)
+          setFeedbackReady(false)
           setMensagens([])
           setStatus('standby')
+          setLessonError('')
           emConversaRef.current = false
           autoListenAfterAudioRef.current = false
           setTimeout(() => iniciarEscutaAtivacao(), 100)
@@ -189,7 +240,11 @@ function App() {
 
         if (dados.type === 'lesson_error') {
           setLessonError(dados.message)
-          setStatus('erro na aula')
+          if (dados.code === 'feedback_audio_error') {
+            setStatus('feedback pronto')
+          } else {
+            setStatus('erro na aula')
+          }
         }
       }
 
@@ -207,27 +262,29 @@ function App() {
     }
   }, [conectar])
 
+  const liberarMicrofone = useCallback(() => {
+    if (streamRef.current) {
+      streamRef.current.getTracks().forEach((track) => track.stop())
+      streamRef.current = null
+    }
+
+    if (audioCtxRef.current) {
+      audioCtxRef.current.close()
+      audioCtxRef.current = null
+    }
+  }, [])
+
   const resetarTimeoutStandby = useCallback(() => {
     if (modoRef.current !== 'free') return
     if (standbyTimerRef.current) clearTimeout(standbyTimerRef.current)
+
     standbyTimerRef.current = setTimeout(() => {
       emConversaRef.current = false
       liberarMicrofone()
       setStatus('standby')
       iniciarEscutaAtivacao()
     }, TIMEOUT_VOLTAR_STANDBY_MS)
-  }, [])
-
-  const liberarMicrofone = useCallback(() => {
-    if (streamRef.current) {
-      streamRef.current.getTracks().forEach((t) => t.stop())
-      streamRef.current = null
-    }
-    if (audioCtxRef.current) {
-      audioCtxRef.current.close()
-      audioCtxRef.current = null
-    }
-  }, [])
+  }, [liberarMicrofone])
 
   const pararGravacao = useCallback(() => {
     if (recorderRef.current && recorderRef.current.state !== 'inactive') {
@@ -235,148 +292,120 @@ function App() {
     }
     if (rafRef.current) cancelAnimationFrame(rafRef.current)
     if (silenceTimerRef.current) clearTimeout(silenceTimerRef.current)
+    silenceTimerRef.current = null
   }, [])
 
-const monitorarSilencio = useCallback(() => {
-  const analiser = analiserRef.current
-  const buffer = new Float32Array(analiser.fftSize)
-  let volumeSuavizado = 0
+  const monitorarSilencio = useCallback(() => {
+    const analiser = analiserRef.current
+    if (!analiser) return
 
-  const checar = () => {
-    analiser.getFloatTimeDomainData(buffer)
+    const buffer = new Float32Array(analiser.fftSize)
+    let volumeSuavizado = 0
 
-    let soma = 0
-    for (let i = 0; i < buffer.length; i++) {
-      soma += buffer[i] * buffer[i]
-    }
+    const checar = () => {
+      analiser.getFloatTimeDomainData(buffer)
 
-    const volumeInstantaneo = Math.sqrt(soma / buffer.length)
-
-    volumeSuavizado =
-      EMA_ALPHA * volumeInstantaneo +
-      (1 - EMA_ALPHA) * volumeSuavizado
-
-    if (volumeSuavizado > SILENCIO_LIMIAR) {
-      if (silenceTimerRef.current) {
-        clearTimeout(silenceTimerRef.current)
-        silenceTimerRef.current = null
+      let soma = 0
+      for (let index = 0; index < buffer.length; index += 1) {
+        soma += buffer[index] * buffer[index]
       }
-    } else if (!silenceTimerRef.current) {
-      silenceTimerRef.current = setTimeout(
-        () => pararGravacao(),
-        SILENCIO_DURACAO_MS,
-      )
+
+      const volumeInstantaneo = Math.sqrt(soma / buffer.length)
+      volumeSuavizado =
+        EMA_ALPHA * volumeInstantaneo +
+        (1 - EMA_ALPHA) * volumeSuavizado
+
+      if (volumeSuavizado > SILENCIO_LIMIAR) {
+        if (silenceTimerRef.current) {
+          clearTimeout(silenceTimerRef.current)
+          silenceTimerRef.current = null
+        }
+      } else if (!silenceTimerRef.current) {
+        silenceTimerRef.current = setTimeout(
+          () => pararGravacao(),
+          SILENCIO_DURACAO_MS,
+        )
+      }
+
+      rafRef.current = requestAnimationFrame(checar)
     }
 
-    rafRef.current = requestAnimationFrame(checar)
-  }
+    checar()
+  }, [pararGravacao])
 
-  checar()
-}, [pararGravacao])
-
-const iniciarGravacao = useCallback(async () => {
-  if (
-    recorderRef.current &&
-    recorderRef.current.state === 'recording'
-  ) {
-    return
-  }
-
-  try {
-    resetarTimeoutStandby()
-    await conectar()
-
+  const iniciarGravacao = useCallback(async () => {
     if (
-      !wsRef.current ||
-      wsRef.current.readyState !== WebSocket.OPEN
+      recorderRef.current &&
+      recorderRef.current.state === 'recording'
     ) {
-      setStatus('erro: não foi possível conectar ao servidor')
       return
     }
 
-    const stream = await navigator.mediaDevices.getUserMedia({
-      audio: true,
-    })
+    try {
+      resetarTimeoutStandby()
+      await conectar()
 
-    streamRef.current = stream
-
-    const audioCtx = new AudioContext()
-    audioCtxRef.current = audioCtx
-
-    const source = audioCtx.createMediaStreamSource(stream)
-    const analiser = audioCtx.createAnalyser()
-
-    analiser.fftSize = 2048
-    source.connect(analiser)
-    analiserRef.current = analiser
-
-    const recorder = new MediaRecorder(stream, {
-      mimeType: 'audio/webm',
-    })
-
-    recorderRef.current = recorder
-    chunksRef.current = []
-
-    recorder.ondataavailable = (event) => {
-      if (event.data.size > 0) {
-        chunksRef.current.push(event.data)
+      if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) {
+        setStatus('erro: não foi possível conectar ao servidor')
+        return
       }
+
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
+      streamRef.current = stream
+
+      const audioCtx = new AudioContext()
+      audioCtxRef.current = audioCtx
+
+      const source = audioCtx.createMediaStreamSource(stream)
+      const analiser = audioCtx.createAnalyser()
+      analiser.fftSize = 2048
+      source.connect(analiser)
+      analiserRef.current = analiser
+
+      const recorder = new MediaRecorder(stream, { mimeType: 'audio/webm' })
+      recorderRef.current = recorder
+      chunksRef.current = []
+
+      recorder.ondataavailable = (event) => {
+        if (event.data.size > 0) chunksRef.current.push(event.data)
+      }
+
+      recorder.onstop = async () => {
+        const blob = new Blob(chunksRef.current, { type: 'audio/webm' })
+        const arrayBuffer = await blob.arrayBuffer()
+
+        stream.getTracks().forEach((track) => track.stop())
+        streamRef.current = null
+
+        if (audioCtx.state !== 'closed') await audioCtx.close()
+        audioCtxRef.current = null
+        analiserRef.current = null
+
+        if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+          wsRef.current.send(arrayBuffer)
+          setStatus('processando')
+        } else {
+          setStatus('erro: sem conexão com o servidor')
+          emConversaRef.current = false
+        }
+      }
+
+      recorder.start()
+      setStatus('ouvindo')
+      monitorarSilencio()
+    } catch (error) {
+      console.error('Erro ao iniciar gravação:', error)
+      setStatus('erro ao acessar o microfone')
+      liberarMicrofone()
     }
-
-    recorder.onstop = async () => {
-      const blob = new Blob(chunksRef.current, {
-        type: 'audio/webm',
-      })
-
-      const arrayBuffer = await blob.arrayBuffer()
-
-      stream.getTracks().forEach((track) => track.stop())
-      streamRef.current = null
-
-      if (audioCtx.state !== 'closed') {
-        await audioCtx.close()
-      }
-
-      audioCtxRef.current = null
-      analiserRef.current = null
-
-      if (
-        wsRef.current &&
-        wsRef.current.readyState === WebSocket.OPEN
-      ) {
-        wsRef.current.send(arrayBuffer)
-        setStatus('processando')
-      } else {
-        console.error(
-          'WebSocket não está conectado:',
-          wsRef.current?.readyState,
-        )
-
-        setStatus('erro: sem conexão com o servidor')
-        emConversaRef.current = false
-      }
-    }
-
-    recorder.start()
-    setStatus('ouvindo')
-    monitorarSilencio()
-  } catch (error) {
-    console.error('Erro ao iniciar gravação:', error)
-    setStatus('erro ao acessar o microfone')
-    liberarMicrofone()
-  }
-}, [
-  conectar,
-  liberarMicrofone,
-  monitorarSilencio,
-  resetarTimeoutStandby,
-])
-
+  }, [conectar, liberarMicrofone, monitorarSilencio, resetarTimeoutStandby])
 
   const iniciarEscutaAtivacao = useCallback(() => {
     if (modoRef.current !== 'free') return
 
-    const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition
+    const SpeechRecognition =
+      window.SpeechRecognition || window.webkitSpeechRecognition
+
     if (!SpeechRecognition) {
       setStatus('reconhecimento por palavra de ativação indisponível')
       return
@@ -392,7 +421,8 @@ const iniciarGravacao = useCallback(async () => {
     recognition.lang = 'en-US'
 
     recognition.onresult = (event) => {
-      const ultimaFala = event.results[event.results.length - 1][0].transcript.toLowerCase()
+      const ultimaFala =
+        event.results[event.results.length - 1][0].transcript.toLowerCase()
 
       if (ultimaFala.includes(PALAVRA_ATIVACAO)) {
         recognition.stop()
@@ -425,7 +455,16 @@ const iniciarGravacao = useCallback(async () => {
 
   const continuarAula = useCallback(async () => {
     emConversaRef.current = true
+    autoListenAfterAudioRef.current = false
     await enviarComando({ type: 'continue_lesson' })
+  }, [enviarComando])
+
+  const iniciarSegundaTentativa = useCallback(async () => {
+    setLessonError('')
+    emConversaRef.current = true
+    autoListenAfterAudioRef.current = false
+    setFeedbackReady(false)
+    await enviarComando({ type: 'start_second_attempt' })
   }, [enviarComando])
 
   const encerrarTentativa = useCallback(async () => {
@@ -437,29 +476,35 @@ const iniciarGravacao = useCallback(async () => {
   const encerrarAula = useCallback(async () => {
     emConversaRef.current = false
     autoListenAfterAudioRef.current = false
+    liberarMicrofone()
     await enviarComando({ type: 'finish_lesson' })
-  }, [enviarComando])
+  }, [enviarComando, liberarMicrofone])
 
   const voltarConversaLivre = useCallback(async () => {
+    liberarMicrofone()
     await enviarComando({
       type: 'start_free_conversation',
       finish_active_lesson: true,
     })
-  }, [enviarComando])
+  }, [enviarComando, liberarMicrofone])
 
   useEffect(() => {
     conectar()
     iniciarEscutaAtivacao()
+
     return () => {
       if (wakeRecognitionRef.current) wakeRecognitionRef.current.stop()
       if (standbyTimerRef.current) clearTimeout(standbyTimerRef.current)
       if (rafRef.current) cancelAnimationFrame(rafRef.current)
       if (wsRef.current) wsRef.current.close()
+      liberarMicrofone()
     }
   }, [])
 
-  const showContinue = lessonStage === 'introduction' || lessonStage === 'phrase_preparation'
-  const attemptActive = lessonStage === 'first_attempt' || lessonStage === 'second_attempt'
+  const showContinue =
+    lessonStage === 'introduction' || lessonStage === 'phrase_preparation'
+  const attemptActive =
+    lessonStage === 'first_attempt' || lessonStage === 'second_attempt'
 
   return (
     <div className="app">
@@ -471,7 +516,9 @@ const iniciarGravacao = useCallback(async () => {
       {modo === 'free' ? (
         <section className="mode-card">
           <h2>Conversa livre</h2>
-          <p>Diga “{PALAVRA_ATIVACAO}” para começar ou pratique uma aula guiada.</p>
+          <p>
+            Diga “{PALAVRA_ATIVACAO}” para começar ou pratique uma aula guiada.
+          </p>
           <button onClick={iniciarAula} disabled={!conectado}>
             Iniciar Daily Routine
           </button>
@@ -499,20 +546,88 @@ const iniciarGravacao = useCallback(async () => {
             </p>
           )}
 
+          {lessonStage === 'first_feedback' && feedback && (
+            <div className="feedback-panel">
+              <div className="feedback-heading">
+                <div>
+                  <span className="feedback-kicker">Seu feedback</span>
+                  <h3>Primeira tentativa</h3>
+                </div>
+                <span className="feedback-source">
+                  {feedback.source === 'fallback' ? 'avaliação local' : 'avaliação IA'}
+                </span>
+              </div>
+
+              <div className="score-grid">
+                {SCORE_LABELS.map(([field, label]) => (
+                  <div className="score-item" key={field}>
+                    <span>{label}</span>
+                    <strong>{feedback[field] ?? '-'} / 5</strong>
+                  </div>
+                ))}
+              </div>
+
+              <div className="feedback-section">
+                <strong>Ponto positivo</strong>
+                <p>{feedback.strengths?.[0]}</p>
+              </div>
+
+              <div className="feedback-section">
+                <strong>Prioridade para repetir melhor</strong>
+                <p>{feedback.priority_improvements?.[0]?.suggestion}</p>
+              </div>
+
+              <div className="feedback-example">
+                <strong>Exemplo aprimorado</strong>
+                <p>{feedback.improved_example}</p>
+              </div>
+
+              {feedback.target_phrases_used?.length > 0 && (
+                <div className="feedback-section">
+                  <strong>Expressões utilizadas</strong>
+                  <div className="used-phrases">
+                    {feedback.target_phrases_used.map((phrase) => (
+                      <span key={phrase}>{phrase}</span>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+
           <div className="lesson-actions">
             {showContinue && (
               <button onClick={continuarAula}>Continuar</button>
             )}
-            {lessonStage === 'first_feedback' && (
+
+            {lessonStage === 'first_feedback' && !feedbackReady && (
+              <p className="notice">Preparando seu feedback...</p>
+            )}
+
+            {lessonStage === 'first_feedback' && feedbackReady && (
+              <button onClick={iniciarSegundaTentativa}>
+                Iniciar segunda tentativa
+              </button>
+            )}
+
+            {attemptActive && canFinishAttempt && (
+              <button className="secondary" onClick={encerrarTentativa}>
+                Encerrar esta tentativa
+              </button>
+            )}
+
+            {lessonStage === 'final_result' && (
               <p className="notice">
-                Primeira tentativa registrada. O feedback automático será conectado na próxima etapa.
+                Segunda tentativa registrada. A comparação final será o próximo incremento.
               </p>
             )}
+
             {lessonStage !== 'completed' && (
               <button className="danger" onClick={encerrarAula}>
                 Encerrar aula
               </button>
             )}
+
             <button className="secondary" onClick={voltarConversaLivre}>
               Voltar à conversa livre
             </button>
