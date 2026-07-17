@@ -18,7 +18,7 @@ urlpatterns = [
     path("admin/", admin.site.urls),
     path("api/", include("conversation.urls")),
     re_path(
-        r"^(?!assets/|api/).*$/",
+        r"^(?!assets/|api/).*$",
         TemplateView.as_view(template_name="index.html"),
     ),
 ]
