@@ -14,23 +14,28 @@ Including another URLconf
     1. Import the include() function: from django.urls import include, path
     2. Add a URL to urlpatterns:  path('blog/', include('blog.urls'))
 """
+import os
+
+from django.conf import settings
 from django.contrib import admin
 from django.urls import path, re_path
 from django.views.generic import TemplateView
-from django.conf import settings
-import os
-from conversation.alexa_views import alexa_respond
+
+from conversation.alexa_views import alexa_interaction, alexa_respond
 
 
 urlpatterns = [
     path("admin/", admin.site.urls),
-
     path(
         "api/alexa/respond/",
         alexa_respond,
         name="alexa-respond",
     ),
-
+    path(
+        "api/alexa/interactions/",
+        alexa_interaction,
+        name="alexa-interaction",
+    ),
     re_path(
         r"^(?!assets/).*$",
         TemplateView.as_view(template_name="index.html"),
@@ -38,4 +43,3 @@ urlpatterns = [
 ]
 
 TEMPLATES_DIR = os.path.join(settings.BASE_DIR.parent, "frontend", "dist")
-
