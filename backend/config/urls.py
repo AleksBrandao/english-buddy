@@ -19,12 +19,23 @@ from django.urls import path, re_path
 from django.views.generic import TemplateView
 from django.conf import settings
 import os
+from conversation.alexa_views import alexa_respond
+
 
 urlpatterns = [
-    path('admin/', admin.site.urls),
-    re_path(r'^(?!assets/).*$', TemplateView.as_view(
-        template_name="index.html"
-    )),
+    path("admin/", admin.site.urls),
+
+    path(
+        "api/alexa/respond/",
+        alexa_respond,
+        name="alexa-respond",
+    ),
+
+    re_path(
+        r"^(?!assets/).*$",
+        TemplateView.as_view(template_name="index.html"),
+    ),
 ]
 
 TEMPLATES_DIR = os.path.join(settings.BASE_DIR.parent, "frontend", "dist")
+

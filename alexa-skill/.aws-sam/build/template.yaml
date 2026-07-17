@@ -1,0 +1,49 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: English Buddy Alexa Skill
+Parameters:
+  SkillId:
+    Type: String
+    Description: Alexa Skill ID
+  BackendUrl:
+    Type: String
+    Description: URL HTTPS do endpoint Django
+  BackendToken:
+    Type: String
+    NoEcho: true
+    Description: Token compartilhado entre Lambda e Django
+Resources:
+  EnglishBuddyAlexaFunction:
+    Type: AWS::Serverless::Function
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      FunctionName: english-buddy-alexa
+      CodeUri: EnglishBuddyAlexaFunction
+      Handler: src/index.handler
+      Runtime: nodejs22.x
+      Architectures:
+      - x86_64
+      MemorySize: 256
+      Timeout: 10
+      Environment:
+        Variables:
+          BACKEND_URL:
+            Ref: BackendUrl
+          BACKEND_TOKEN:
+            Ref: BackendToken
+      Events:
+        AlexaSkillEvent:
+          Type: AlexaSkill
+          Properties:
+            SkillId:
+              Ref: SkillId
+    Metadata:
+      SamResourceId: EnglishBuddyAlexaFunction
+Outputs:
+  FunctionArn:
+    Description: ARN da Lambda da Skill
+    Value:
+      Fn::GetAtt:
+      - EnglishBuddyAlexaFunction
+      - Arn
