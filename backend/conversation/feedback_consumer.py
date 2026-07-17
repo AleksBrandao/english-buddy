@@ -1,0 +1,156 @@
+import json
+
+from asgiref.sync import sync_to_async
+from channels.db import database_sync_to_async
+
+from . import evaluators
+from .consumers import TalkConsumer
+from .lesson_orchestrator import LessonStage, LessonTransitionError
+from .models import AvaliacaoSessao
+
+
+class FeedbackTalkConsumer(TalkConsumer):
+    """TalkConsumer with guided feedback and second-attempt support."""
+
+    async def _receive_command(self, text_data):
+        """Handle incremental lesson commands before delegating legacy ones."""
+        try:
+            payload = json.loads(text_data)
+        except json.JSONDecodeError:
+            await super()._receive_command(text_data)
+            return
+
+        if (
+            isinstance(payload, dict)
+            and payload.get("type") == "start_second_attempt"
+        ):
+            try:
+                await self._command_start_second_attempt(payload)
+            except (LessonTransitionError, ValueError) as exc:
+                await self._send_error(
+                    "invalid_lesson_transition",
+                    str(exc),
+                )
+            return
+
+        await super()._receive_command(text_data)
+
+    async def _command_finish_attempt(self, payload):
+        lesson = self._require_active_lesson()
+        event = lesson.finish_current_attempt(
+            force=bool(payload.get("force", False))
+        )
+        await self._sincronizar_sessao_treino()
+        await self._send_json(event)
+
+        if lesson.state.stage == LessonStage.FIRST_FEEDBACK:
+            await self._generate_first_feedback()
+
+    async def _command_start_second_attempt(self, payload):
+        lesson = self._require_active_lesson()
+        event = lesson.start_second_attempt()
+
+        await self._sincronizar_sessao_treino()
+        await self._send_json(event)
+
+        question = event["question"]
+        await self._persistir_mensagem("assistente", question)
+        await self._send_text_and_audio(
+            question,
+            mode="guided_lesson",
+            extra={"attempt": "second"},
+        )
+
+    async def _handle_lesson_utterance(self, texto_usuario):
+        lesson = self._require_active_lesson()
+        if lesson.state.stage not in {
+            LessonStage.FIRST_ATTEMPT,
+            LessonStage.SECOND_ATTEMPT,
+        }:
+            raise LessonTransitionError(
+                "Audio answers are accepted only during a lesson attempt."
+            )
+
+        await self._persistir_mensagem("usuario", texto_usuario)
+        event = lesson.register_user_utterance(texto_usuario)
+        await self._sincronizar_sessao_treino()
+        await self._send_json(event)
+
+        transition = event.get("transition")
+        if transition:
+            await self._send_json(transition)
+            if lesson.state.stage == LessonStage.FIRST_FEEDBACK:
+                await self._generate_first_feedback()
+            return
+
+        next_question = event.get("next_question")
+        if next_question:
+            await self._persistir_mensagem("assistente", next_question)
+            await self._send_text_and_audio(
+                next_question,
+                mode="guided_lesson",
+            )
+
+    async def _generate_first_feedback(self):
+        lesson = self._require_active_lesson()
+        if lesson.state.stage != LessonStage.FIRST_FEEDBACK:
+            raise LessonTransitionError(
+                "First-attempt feedback can only be generated during first_feedback."
+            )
+
+        await self._send_json(
+            {
+                "type": "feedback_generating",
+                "stage": lesson.state.stage.value,
+            }
+        )
+
+        feedback, latency = await sync_to_async(
+            evaluators.evaluate_first_attempt,
+            thread_sensitive=False,
+        )(
+            list(lesson.state.first_attempt),
+            lesson.scenario.target_phrases,
+            lesson.scenario.objective,
+            lesson.scenario.level,
+        )
+
+        feedback_event = lesson.set_intermediate_feedback(feedback)
+        await database_sync_to_async(self._save_first_evaluation)(feedback)
+        await self._sincronizar_sessao_treino()
+        await self._send_json(
+            {
+                **feedback_event,
+                "latency_ms": round(latency * 1000),
+            }
+        )
+
+        spoken_feedback = feedback["spoken_feedback"]
+        await self._persistir_mensagem("assistente", spoken_feedback)
+        try:
+            await self._send_text_and_audio(
+                spoken_feedback,
+                mode="guided_feedback",
+                extra={"feedback": feedback},
+            )
+        except Exception as exc:
+            print(f"[feedback] Audio generation failed: {exc}")
+            await self._send_error(
+                "feedback_audio_error",
+                "The feedback was saved, but its audio could not be generated.",
+            )
+        finally:
+            await self._send_json(
+                {
+                    "type": "lesson_stage_changed",
+                    "stage": LessonStage.FIRST_FEEDBACK.value,
+                    "feedback_ready": True,
+                }
+            )
+
+    def _save_first_evaluation(self, feedback):
+        AvaliacaoSessao.objects.update_or_create(
+            sessao=self.sessao_treino,
+            tipo=AvaliacaoSessao.Tipo.PRIMEIRA_TENTATIVA,
+            defaults={"dados": feedback},
+        )
