@@ -10,7 +10,12 @@ Parameters:
 
   BackendUrl:
     Type: String
-    Description: URL HTTPS do endpoint Django
+    Description: URL HTTPS do endpoint Django de resposta
+
+  BackendLogUrl:
+    Type: String
+    Default: ""
+    Description: URL HTTPS do endpoint Django de interações
 
   BackendToken:
     Type: String
@@ -39,6 +44,7 @@ Resources:
       Environment:
         Variables:
           BACKEND_URL: !Ref BackendUrl
+          BACKEND_LOG_URL: !Ref BackendLogUrl
           BACKEND_TOKEN: !Ref BackendToken
 
       Events:
