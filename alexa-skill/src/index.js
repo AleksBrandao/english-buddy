@@ -11,13 +11,22 @@ const BACKEND_LOG_URL =
     ? BACKEND_URL.replace(/\/respond\/?$/, "/interactions/")
     : "");
 
+function escapeSsml(text = "") {
+  return String(text)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&apos;");
+}
+
 async function callBackend(text, history = []) {
   if (!BACKEND_URL || !BACKEND_TOKEN) {
     throw new Error("BACKEND_URL ou BACKEND_TOKEN não configurado.");
   }
 
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 8000);
+  const timeout = setTimeout(() => controller.abort(), 5500);
 
   try {
     const response = await fetch(BACKEND_URL, {
@@ -248,10 +257,11 @@ const ConversationIntentHandler = {
       });
 
       return handlerInput.responseBuilder
-        .speak(data.reply)
+        .speak(escapeSsml(data.reply))
         .reprompt(
           "Continue by beginning your answer with, I say."
         )
+        .withShouldEndSession(false)
         .getResponse();
     } catch (error) {
       console.error("Erro ao chamar o backend:", error);
@@ -294,26 +304,16 @@ const HelpIntentHandler = {
 
 const StopIntentHandler = {
   canHandle(handlerInput) {
-    const requestType = Alexa.getRequestType(
-      handlerInput.requestEnvelope
+    return (
+      Alexa.getRequestType(handlerInput.requestEnvelope) ===
+        "IntentRequest" &&
+      [
+        "AMAZON.StopIntent",
+        "AMAZON.CancelIntent",
+      ].includes(
+        Alexa.getIntentName(handlerInput.requestEnvelope)
+      )
     );
-
-    if (requestType === "SessionEndedRequest") {
-      return true;
-    }
-
-    if (requestType !== "IntentRequest") {
-      return false;
-    }
-
-    const intentName = Alexa.getIntentName(
-      handlerInput.requestEnvelope
-    );
-
-    return [
-      "AMAZON.StopIntent",
-      "AMAZON.CancelIntent",
-    ].includes(intentName);
   },
 
   handle(handlerInput) {
@@ -321,6 +321,31 @@ const StopIntentHandler = {
       .speak("Goodbye. See you next time.")
       .withShouldEndSession(true)
       .getResponse();
+  },
+};
+
+const SessionEndedRequestHandler = {
+  canHandle(handlerInput) {
+    return (
+      Alexa.getRequestType(handlerInput.requestEnvelope) ===
+      "SessionEndedRequest"
+    );
+  },
+
+  handle(handlerInput) {
+    const request = handlerInput.requestEnvelope.request;
+
+    console.log(
+      "SESSION_ENDED",
+      JSON.stringify({
+        requestId: request.requestId,
+        reason: request.reason,
+        error: request.error || null,
+      })
+    );
+
+    // SessionEndedRequest exige resposta vazia.
+    return handlerInput.responseBuilder.getResponse();
   },
 };
 
@@ -371,6 +396,7 @@ exports.handler = Alexa.SkillBuilders.custom()
     ConversationIntentHandler,
     HelpIntentHandler,
     StopIntentHandler,
+    SessionEndedRequestHandler,
     FallbackIntentHandler
   )
   .addResponseInterceptors(InteractionLoggingResponseInterceptor)
