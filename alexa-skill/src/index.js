@@ -1,9 +1,15 @@
 "use strict";
 
+const crypto = require("crypto");
 const Alexa = require("ask-sdk-core");
 
 const BACKEND_URL = process.env.BACKEND_URL;
 const BACKEND_TOKEN = process.env.BACKEND_TOKEN;
+const BACKEND_LOG_URL =
+  process.env.BACKEND_LOG_URL ||
+  (BACKEND_URL
+    ? BACKEND_URL.replace(/\/respond\/?$/, "/interactions/")
+    : "");
 
 async function callBackend(text, history = []) {
   if (!BACKEND_URL || !BACKEND_TOKEN) {
@@ -46,6 +52,127 @@ async function callBackend(text, history = []) {
     clearTimeout(timeout);
   }
 }
+
+function extractSlots(request) {
+  const requestSlots = request?.intent?.slots || {};
+  const slots = {};
+
+  for (const [name, slot] of Object.entries(requestSlots)) {
+    slots[name] = {
+      value: slot?.value || "",
+      confirmationStatus: slot?.confirmationStatus || "NONE",
+      resolutions: slot?.resolutions || null,
+    };
+  }
+
+  return slots;
+}
+
+function extractSpeech(response) {
+  const outputSpeech = response?.outputSpeech;
+
+  if (!outputSpeech) {
+    return "";
+  }
+
+  if (outputSpeech.type === "PlainText") {
+    return outputSpeech.text || "";
+  }
+
+  if (outputSpeech.type === "SSML") {
+    return (outputSpeech.ssml || "")
+      .replace(/<[^>]+>/g, " ")
+      .replace(/\s+/g, " ")
+      .trim();
+  }
+
+  return "";
+}
+
+function hashUserId(userId) {
+  if (!userId || !BACKEND_TOKEN) {
+    return "";
+  }
+
+  return crypto
+    .createHmac("sha256", BACKEND_TOKEN)
+    .update(userId)
+    .digest("hex");
+}
+
+async function logInteraction(handlerInput, response) {
+  if (!BACKEND_LOG_URL || !BACKEND_TOKEN) {
+    console.warn(
+      "Registro Alexa desativado: BACKEND_LOG_URL ou BACKEND_TOKEN ausente."
+    );
+    return;
+  }
+
+  const envelope = handlerInput.requestEnvelope || {};
+  const request = envelope.request || {};
+  const session = envelope.session || {};
+  const system = envelope.context?.System || {};
+  const applicationId =
+    session.application?.applicationId ||
+    system.application?.applicationId ||
+    "";
+  const userId =
+    session.user?.userId ||
+    system.user?.userId ||
+    "";
+  const sessionId = session.sessionId || request.requestId || "";
+  const userText = request.intent?.slots?.text?.value || "";
+
+  const payload = {
+    request_id: request.requestId || "",
+    session_id: sessionId,
+    application_id: applicationId,
+    user_id_hash: hashUserId(userId),
+    request_type: request.type || "",
+    intent_name: request.intent?.name || "",
+    locale: request.locale || "",
+    slots: extractSlots(request),
+    user_text: userText,
+    assistant_text: extractSpeech(response),
+    session_ended_reason: request.reason || "",
+    request_data: request,
+  };
+
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 1500);
+
+  try {
+    const logResponse = await fetch(BACKEND_LOG_URL, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Alexa-Token": BACKEND_TOKEN,
+      },
+      body: JSON.stringify(payload),
+      signal: controller.signal,
+    });
+
+    if (!logResponse.ok) {
+      const rawBody = await logResponse.text();
+      throw new Error(
+        `Logger respondeu ${logResponse.status}: ${rawBody}`
+      );
+    }
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+const InteractionLoggingResponseInterceptor = {
+  async process(handlerInput, response) {
+    try {
+      await logInteraction(handlerInput, response);
+    } catch (error) {
+      // O registro não deve impedir a Alexa de responder ao usuário.
+      console.error("Erro ao registrar interação no backend:", error);
+    }
+  },
+};
 
 const LaunchRequestHandler = {
   canHandle(handlerInput) {
@@ -246,5 +373,6 @@ exports.handler = Alexa.SkillBuilders.custom()
     StopIntentHandler,
     FallbackIntentHandler
   )
+  .addResponseInterceptors(InteractionLoggingResponseInterceptor)
   .addErrorHandlers(ErrorHandler)
   .lambda();
